@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  # Playwright 브라우저 서버
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.56.0-jammy
+    container_name: playwright_server
+    command: npx playwright run-server --port 3000
+    ports:
+      - "3000:3000"
+    environment:
+      - PLAYWRIGHT_SERVER_PORT=3000
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - n8n_network
+    restart: unless-stopped
+
+  # FastAPI 애플리케이션
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi_scraper
+    environment:
+      # N8N의 PostgreSQL 사용 (컨테이너명으로 접속)
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/n8n
+      - PLAYWRIGHT_SERVER_URL=ws://playwright:3000
+      - SECRET_KEY=your-secret-key-change-this-in-production-2024
+    ports:
+      - "8000:8000"
+    depends_on:
+      playwright:
+        condition: service_healthy
+    volumes:
+      - ./main_enhanced.py:/app/main.py
+    networks:
+      - n8n_network
+    restart: unless-stopped
+
+# N8N과 같은 네트워크 사용 (외부 네트워크)
+networks:
+  n8n_network:
+    external: true
+    name: n8n_network  # N8N이 사용하는 네트워크 이름으로 변경하세요
