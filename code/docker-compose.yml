@@ -17,7 +17,7 @@ services:
       - n8n_network
     restart: unless-stopped
 
-  # FastAPI 애플리케이션
+  # FastAPI 애플리케이션 (순수 스크래핑만)
   fastapi:
     build:
       context: .
@@ -27,7 +27,6 @@ services:
       - .env
     environment:
       - PLAYWRIGHT_SERVER_URL=${PLAYWRIGHT_SERVER_URL:-ws://playwright:3000}
-      - DATABASE_URL=${DATABASE_URL}
       - SECRET_KEY=${SECRET_KEY}
       - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
     ports:

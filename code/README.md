@@ -1,22 +1,46 @@
-# Playwright Scraper API with JWT & PostgreSQL
+# Playwright Scraper API with JWT
 
-JWT 인증, 병렬 처리, PostgreSQL 중복 제거 기능을 갖춘 고급 웹 스크래퍼 API입니다.
+JWT 인증과 병렬 처리 기능을 갖춘 **순수 스크래핑 전문 API**입니다.
 
-> **💡 N8N 환경 최적화:** 이 프로젝트는 N8N과 함께 사용하도록 설계되었으며, N8N의 PostgreSQL을 공유합니다.  
-> 자세한 설정은 **[N8N_SETUP.md](N8N_SETUP.md)** 를 참고하세요!
+> **💡 아키텍처 설계:** FastAPI는 스크래핑만, N8N이 PostgreSQL 데이터 관리를 담당합니다.  
+> 자세한 N8N 설정은 **[N8N_SETUP.md](N8N_SETUP.md)** 를 참고하세요!
 
 ## 주요 기능
 
 - ✅ **JWT 인증**: Bearer 토큰 기반 보안
 - ✅ **병렬 스크래핑**: 최대 10개 URL 동시 처리
-- ✅ **PostgreSQL 중복 제거**: URL 중복 자동 체크 및 저장 (N8N과 공유)
-- ✅ **리소스 최적화**: Lifespan과 Connection Pooling 활용
+- ✅ **Stealth 모드**: 봇 탐지 우회 기능
+- ✅ **리소스 최적화**: Lifespan으로 브라우저 재사용
 - ✅ **에러 핸들링**: 타임아웃 및 예외 처리
 - ✅ **N8N 통합**: 같은 Docker 네트워크에서 원활한 통신
 
+## 🎨 아키텍처
+
+```
+┌─────────────────────────────────────────┐
+│              N8N Network                 │
+│  ┌──────────┐         ┌──────────┐     │
+│  │   N8N    │────────▶│PostgreSQL│     │
+│  │          │  중복체크 │(테이블생성)│     │
+│  └──────────┘  데이터저장 └──────────┘     │
+│       │                                  │
+│       │ (새 URL만)                       │
+│       ▼                                  │
+│  ┌──────────┐         ┌──────────┐     │
+│  │ FastAPI  │────────▶│ Playwright│     │
+│  │(스크래핑)│         │(브라우저) │     │
+│  └──────────┘         └──────────┘     │
+└─────────────────────────────────────────┘
+```
+
+**역할 분리:**
+- **FastAPI**: 브라우저 자동화, HTML 추출만
+- **N8N**: PostgreSQL 테이블 생성, 중복 체크, 데이터 저장
+- **Playwright**: 브라우저 서버
+
 ## 🚀 빠른 시작 (5분!)
 
-> **⚠️ 필수:** N8N과 PostgreSQL이 이미 실행 중이어야 합니다!
+> **⚠️ 필수:** N8N이 이미 실행 중이어야 합니다!
 
 ```bash
 # 1. N8N 네트워크 확인
@@ -24,7 +48,7 @@ docker network ls | grep n8n
 
 # 2. 환경 파일 생성 및 수정
 cp env.example .env
-nano .env  # SECRET_KEY, DATABASE_URL, NETWORK_NAME 수정
+nano .env  # SECRET_KEY, NETWORK_NAME 수정
 
 # 3. 서비스 시작
 docker compose up -d
@@ -67,8 +91,7 @@ curl -X POST http://localhost:8000/scrape \
     "url": "https://example.com",
     "wait_for": "networkidle",
     "timeout": 30000,
-    "screenshot": false,
-    "block_resources": false
+    "stealth_mode": false
   }'
 ```
 
@@ -80,28 +103,40 @@ curl -X POST http://localhost:8000/scrape/batch \
   -H "Content-Type: application/json" \
   -d '{
     "urls": [
-      {
-        "url": "https://example.com/page1",
-        "wait_for": "networkidle"
-      },
-      {
-        "url": "https://example.com/page2",
-        "wait_for": "load"
-      }
+      "https://example.com/page1",
+      "https://example.com/page2"
     ],
     "max_concurrent": 5,
-    "check_duplicates": true
+    "stealth_mode": true
   }'
 ```
 
-### 4. 처리된 URL 조회
-
-```bash
-curl -X GET "http://localhost:8000/processed-urls?limit=10&offset=0" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
-
 ## N8N 통합 예시
+
+### 워크플로우 구조
+
+```
+1. [초기 설정] PostgreSQL 노드 (한 번만 실행)
+   → CREATE TABLE IF NOT EXISTS processed_urls...
+   
+2. [정기 실행] Schedule Trigger
+   ↓
+3. RSS Read (뉴스 URL 수집)
+   ↓
+4. PostgreSQL Query (중복 체크)
+   → SELECT url FROM processed_urls WHERE url = ...
+   ↓
+5. Filter (중복 아닌 것만)
+   ↓
+6. HTTP Request → FastAPI (JWT 토큰 발급)
+   ↓
+7. HTTP Request → FastAPI (병렬 스크래핑)
+   ↓
+8. Google Sheets (저장)
+   ↓
+9. PostgreSQL Insert (처리된 URL 저장)
+   → INSERT INTO processed_urls(url, title) VALUES...
+```
 
 ### 1. JWT 토큰 발급 (HTTP Request 노드)
 
@@ -126,44 +161,22 @@ Body:
 {
   "urls": {{ $json.urls }},
   "max_concurrent": 5,
-  "check_duplicates": true
+  "stealth_mode": true
 }
 ```
 
-## PostgreSQL 직접 접속 (N8N과 공유)
-
-```bash
-# N8N의 PostgreSQL 컨테이너 접속
-docker exec -it [postgres_container_name] psql -U postgres -d n8n
-
-# 예시:
-docker exec -it postgres psql -U postgres -d n8n
-# 또는
-docker exec -it n8n-postgres psql -U postgres -d n8n
-
-# 테이블 확인
-\dt
-
-# 처리된 URL 조회
-SELECT * FROM processed_urls ORDER BY processed_at DESC LIMIT 10;
-
-# 중복 URL 확인
-SELECT url, COUNT(*) as count 
-FROM processed_urls 
-GROUP BY url 
-HAVING COUNT(*) > 1;
-```
-
-## 데이터베이스 스키마
+### 3. PostgreSQL 중복 체크 (PostgreSQL 노드)
 
 ```sql
-CREATE TABLE processed_urls (
-    id SERIAL PRIMARY KEY,
-    url TEXT UNIQUE NOT NULL,
-    title TEXT,
-    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    success BOOLEAN DEFAULT TRUE
-);
+-- 중복 확인
+SELECT EXISTS(
+  SELECT 1 FROM processed_urls WHERE url = {{ $json.url }}
+) as is_duplicate;
+
+-- 처리된 URL 저장
+INSERT INTO processed_urls (url, title, success)
+VALUES ({{ $json.url }}, {{ $json.title }}, true)
+ON CONFLICT (url) DO NOTHING;
 ```
 
 ## 환경 변수
@@ -171,7 +184,6 @@ CREATE TABLE processed_urls (
 | 변수명 | 설명 | 기본값 |
 |--------|------|--------|
 | `SECRET_KEY` | JWT 토큰 암호화 키 (필수 변경!) | - |
-| `DATABASE_URL` | PostgreSQL 연결 문자열 (N8N과 공유) | `postgresql://postgres:postgres@postgres:5432/n8n` |
 | `PLAYWRIGHT_SERVER_URL` | Playwright 서버 주소 | `ws://playwright:3000` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | JWT 토큰 만료 시간(분) | `30` |
 | `NETWORK_NAME` | Docker 네트워크 이름 (N8N과 동일) | `n8n_network` |
@@ -182,13 +194,13 @@ CREATE TABLE processed_urls (
    - CPU 코어 수에 맞춰 `max_concurrent` 값 조정
    - 기본값 5개 권장
 
-2. **리소스 차단 활용**
-   - `block_resources: true` 설정으로 이미지/CSS/폰트 차단
-   - 속도 30~50% 향상
+2. **Stealth 모드 활용**
+   - 봇 탐지 사이트에는 `stealth_mode: true` 설정
+   - 약간의 성능 저하 있지만 안전성 향상
 
-3. **Connection Pool 크기 조정**
-   - `main_enhanced.py`의 `create_pool()` 설정 변경
-   - 동시 요청 수에 따라 `max_size` 조정
+3. **브라우저 연결 재사용**
+   - Lifespan으로 브라우저 연결 유지
+   - 매 요청마다 연결 생성하지 않아 2-3배 빠름
 
 ## 트러블슈팅
 
@@ -197,34 +209,40 @@ CREATE TABLE processed_urls (
 ```bash
 # Playwright 서비스 재시작
 docker compose restart playwright
-```
-
-### 2. PostgreSQL 연결 실패 (N8N)
-
-```bash
-# N8N PostgreSQL 컨테이너 확인
-docker ps | grep postgres
 
 # 로그 확인
-docker logs [postgres_container_name]
-
-# FastAPI 로그에서 연결 오류 확인
-docker compose logs fastapi | grep -i "database\|postgres"
-
-# DATABASE_URL 확인
-docker exec fastapi_scraper env | grep DATABASE_URL
+docker compose logs playwright
 ```
 
-**해결 방법:**
-- `.env` 파일의 `DATABASE_URL`이 N8N PostgreSQL 정보와 일치하는지 확인
-- N8N과 FastAPI가 같은 Docker 네트워크에 있는지 확인
-- PostgreSQL 컨테이너명이 정확한지 확인
+### 2. N8N에서 FastAPI 연결 안 됨
+
+**원인:** localhost 대신 컨테이너명 사용해야 함
+
+```
+❌ 잘못된 예: http://localhost:8000/scrape
+✅ 올바른 예: http://fastapi:8000/scrape
+              또는
+              http://fastapi_scraper:8000/scrape
+```
 
 ### 3. JWT 토큰 만료
 
 ```bash
 # 새 토큰 발급
 curl -X POST http://localhost:8000/login ...
+```
+
+### 4. 네트워크 연결 안 됨
+
+```bash
+# 네트워크 확인
+docker network ls | grep n8n
+
+# docker-compose.yml에서 NETWORK_NAME 수정
+networks:
+  n8n_network:
+    external: true
+    name: [실제_네트워크_이름]
 ```
 
 ## 개발 모드 실행
@@ -234,6 +252,18 @@ curl -X POST http://localhost:8000/login ...
 pip install -r requirements.txt
 uvicorn main_enhanced:app --reload --host 0.0.0.0 --port 8000
 ```
+
+## 📊 성능 비교
+
+| 항목 | 순차 처리 | 병렬 처리 (5개) |
+|-----|----------|----------------|
+| 10개 URL | 약 30초 | 약 10초 |
+| 50개 URL | 약 150초 | 약 35초 |
+| 100개 URL | 약 300초 | 약 70초 |
+
+**브라우저 재사용 효과:**
+- 매번 새 연결: 요청당 2-3초 오버헤드
+- Lifespan 재사용: 오버헤드 없음 (2-3배 빠름)
 
 ## 라이선스
 

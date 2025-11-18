@@ -1,8 +1,19 @@
+# FastAPI & Server
 fastapi==0.121.1
 uvicorn[standard]==0.38.0
+
+# Browser Automation
 playwright==1.56.0
+
+# Data Validation
 pydantic==2.9.2
-python-jose[cryptography]==3.3.0
+
+# JWT Authentication
+python-jose[cryptography]==3.5.0
+
+# Password Hashing
 passlib[bcrypt]==1.7.4
-asyncpg==0.30.0
+bcrypt==4.2.1
+
+# Form Data
 python-multipart==0.0.20
