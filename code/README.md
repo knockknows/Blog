@@ -14,46 +14,26 @@ JWT 인증, 병렬 처리, PostgreSQL 중복 제거 기능을 갖춘 고급 웹 
 - ✅ **에러 핸들링**: 타임아웃 및 예외 처리
 - ✅ **N8N 통합**: 같은 Docker 네트워크에서 원활한 통신
 
-## 빠른 시작
+## 🚀 빠른 시작 (5분!)
 
-> **⚠️ 중요:** N8N과 PostgreSQL이 이미 실행 중이어야 합니다!
-
-### 1. N8N 네트워크 확인
+> **⚠️ 필수:** N8N과 PostgreSQL이 이미 실행 중이어야 합니다!
 
 ```bash
-# N8N이 사용하는 네트워크 확인
+# 1. N8N 네트워크 확인
 docker network ls | grep n8n
-```
 
-### 2. 환경 설정
-
-```bash
-# .env 파일 생성
+# 2. 환경 파일 생성 및 수정
 cp env.example .env
+nano .env  # SECRET_KEY, DATABASE_URL, NETWORK_NAME 수정
 
-# 다음 항목들을 반드시 수정하세요:
-# 1. SECRET_KEY: openssl rand -hex 32로 생성한 값
-# 2. DATABASE_URL: N8N PostgreSQL 연결 정보
-# 3. docker-compose.yml의 네트워크 이름
-nano .env
-nano docker-compose.yml
+# 3. 서비스 시작
+docker compose up -d
+
+# 4. 확인
+curl http://localhost:8000/health
 ```
 
-### 3. 서비스 시작
-
-```bash
-# FastAPI + Playwright 시작 (PostgreSQL은 N8N 것 사용)
-docker-compose up -d
-
-# 로그 확인
-docker-compose logs -f fastapi
-```
-
-### 4. 서비스 확인
-
-- **API 문서**: http://localhost:8000/docs
-- **헬스 체크**: http://localhost:8000/health
-- **N8N에서 접근**: http://fastapi:8000 (또는 http://fastapi_scraper:8000)
+**자세한 설정은 [N8N_SETUP.md](N8N_SETUP.md) 참고!** 📖
 
 ## API 사용 방법
 
@@ -216,7 +196,7 @@ CREATE TABLE processed_urls (
 
 ```bash
 # Playwright 서비스 재시작
-docker-compose restart playwright
+docker compose restart playwright
 ```
 
 ### 2. PostgreSQL 연결 실패 (N8N)
@@ -229,7 +209,7 @@ docker ps | grep postgres
 docker logs [postgres_container_name]
 
 # FastAPI 로그에서 연결 오류 확인
-docker-compose logs fastapi | grep -i "database\|postgres"
+docker compose logs fastapi | grep -i "database\|postgres"
 
 # DATABASE_URL 확인
 docker exec fastapi_scraper env | grep DATABASE_URL

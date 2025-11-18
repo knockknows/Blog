@@ -2,6 +2,42 @@
 
 이 가이드는 **이미 실행 중인 N8N + PostgreSQL 환경**에 FastAPI 스크래퍼를 추가하는 방법을 설명해요.
 
+## 🚀 빠른 시작 (5분 안에 완료!)
+
+```bash
+# 1. N8N 네트워크 이름 확인
+docker network ls | grep n8n
+
+# 2. PostgreSQL 컨테이너명 확인  
+docker ps | grep postgres
+
+# 3. 환경 파일 생성
+cp env.example .env
+
+# 4. .env 파일 수정 (필수!)
+nano .env
+# - SECRET_KEY: openssl rand -hex 32 출력값 입력
+# - DATABASE_URL: N8N PostgreSQL 정보 입력
+# - NETWORK_NAME: 1번에서 확인한 네트워크 이름 입력
+
+# 5. 서비스 시작
+docker compose up -d
+
+# 6. 확인
+curl http://localhost:8000/health
+```
+
+**예상 응답 (성공):**
+```json
+{
+  "status": "healthy",
+  "browser": "connected",
+  "database": "connected"
+}
+```
+
+---
+
 ## 🎯 전제 조건
 
 ✅ N8N이 Docker로 실행 중  
@@ -117,10 +153,10 @@ DATABASE_URL=postgresql://[사용자명]:[비밀번호]@[컨테이너명]:5432/[
 
 ```bash
 # 서비스 시작 (PostgreSQL 없이 Playwright + FastAPI만)
-docker-compose up -d
+docker compose up -d
 
 # 로그 확인
-docker-compose logs -f fastapi
+docker compose logs -f fastapi
 ```
 
 ### 4단계: 연결 확인
@@ -191,7 +227,7 @@ docker exec n8n env | grep DB
 **해결:**
 ```bash
 # FastAPI 로그 확인 (자동 생성 시도)
-docker-compose logs fastapi | grep CREATE
+docker compose logs fastapi | grep CREATE
 
 # 수동으로 테이블 생성
 docker exec -it [postgres_container] psql -U postgres -d n8n
@@ -297,7 +333,7 @@ Host Machine:                                     │
 - [ ] `.env` 파일 생성 및 DATABASE_URL 수정
 - [ ] SECRET_KEY 변경 (32자 이상 랜덤 문자열)
 - [ ] PostgreSQL에 테이블 생성 (선택사항)
-- [ ] `docker-compose up -d` 실행
+- [ ] `docker compose up -d` 실행
 - [ ] `/health` 엔드포인트로 연결 확인
 - [ ] N8N HTTP Request 노드에서 컨테이너명 사용 확인
 
@@ -326,7 +362,7 @@ Host Machine:                                     │
 docker network inspect [network_name]
 
 # 2. 컨테이너 로그
-docker-compose logs fastapi
+docker compose logs fastapi
 docker logs n8n
 docker logs [postgres_container]
 
