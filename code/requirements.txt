@@ -13,7 +13,7 @@ python-jose[cryptography]==3.5.0
 
 # Password Hashing
 passlib[bcrypt]==1.7.4
-bcrypt==4.2.1
+bcrypt==4.0.1
 
 # Form Data
 python-multipart==0.0.20
