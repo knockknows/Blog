@@ -156,32 +156,36 @@ N8N에서 PostgreSQL 테이블 생성부터 데이터 관리까지 모두 수행
 ### 전체 워크플로우 구조
 
 ```
-1. [초기 설정] PostgreSQL 노드 - 테이블 생성
-   → 한 번만 실행 후 비활성화
-   
-2. [정기 실행] Schedule Trigger
+1. Schedule Trigger               → 매시간 자동 실행
    ↓
-3. RSS Read / HTTP Request (URL 수집)
+2. RSS Read                       → 뉴스 URL 수집
    ↓
-4. Code Node (URL 배열 생성)
+3. Code (Link 추출)               → URL을 '|||'로 구분한 문자열로 변환
    ↓
-5. PostgreSQL Query (중복 체크)
-   → SELECT url FROM processed_urls WHERE url IN (...)
+4. PostgreSQL Query (중복 체크)   → string_to_array로 중복 확인
    ↓
-6. Code Node (중복 제외 필터링)
+5. Code (중복 제거 링크 배열 생성) → 새 URL만 배열로 필터링
    ↓
-7. HTTP Request → FastAPI Login (JWT 토큰)
+6. If (URLs 확인)                 → 새 URL이 있는지 확인
    ↓
-8. HTTP Request → FastAPI Scrape (병렬 스크래핑)
+7. HTTP Request (JWT 발급)        → FastAPI 토큰 발급
    ↓
-9. Filter (성공한 것만)
+8. HTTP Request (병렬 스크래핑)   → 병렬 스크래핑 요청
    ↓
-10. Google Sheets (저장)
-    ↓
-11. PostgreSQL Insert (처리 완료 URL 저장)
+9. Filter (성공 필터링)           → success=true만 통과
+   ↓
+10. Loop Over Items               → 각 아이템 순회 처리
+   ↓
+11. WebpageContentExtractor       → HTML에서 텍스트 추출
+   ↓
+12. Code (헤더 포맷 정규화)       → Google Sheets 형식 맞춤
+   ↓
+13. Google Sheets (Append)        → 데이터 저장
+   ↓
+14. PostgreSQL Insert             → 처리 완료 URL 저장
 ```
 
-### 1. PostgreSQL 테이블 생성 (초기 설정)
+### 1. PostgreSQL 테이블 생성 (초기 설정 - 한 번만 실행)
 
 **노드:** PostgreSQL
 
@@ -201,105 +205,215 @@ CREATE INDEX IF NOT EXISTS idx_processed_at ON processed_urls(processed_at DESC)
 
 **💡 팁:** 이 노드는 한 번만 실행하고 비활성화하세요!
 
-### 2. 중복 URL 체크 (매번 실행)
+### 2. Schedule Trigger
+
+**설정:**
+- Interval: 1 hour (매시간 실행)
+
+### 3. RSS Read
+
+**설정:**
+- URL: RSS 피드 주소 (예: `https://news.sbs.co.kr/news/headlineRssFeed.do?plink=RSSREADER`)
+
+### 4. Code (Link 추출)
+
+**JavaScript 코드:**
+```javascript
+// RSS Read에서 받은 모든 URL을 '|||'로 연결한 문자열 생성
+// PostgreSQL에서 string_to_array로 파싱할 수 있도록
+const urls = $input.all().map(item => item.json.link);
+const urlString = urls.join('|||');
+
+return { json: { urls: urlString } };
+```
+
+**설명:**  
+PostgreSQL의 `string_to_array` 함수를 사용하기 위해 URL 배열을 '|||'로 구분한 문자열로 변환합니다.
+
+### 5. PostgreSQL Query (중복 체크)
 
 **노드:** PostgreSQL
 
 ```sql
--- 방법 1: 개별 URL 체크 (Item 모드)
-SELECT EXISTS(
-  SELECT 1 FROM processed_urls WHERE url = $1
-) as is_duplicate;
-```
-
-**파라미터:**
-- `$1`: `{{ $json.url }}`
-
-**방법 2: 대량 URL 체크 (Batch 모드 - 추천!)**
-
-```sql
--- N8N Code 노드에서 먼저 URL 배열 생성
-// Code 노드 (JavaScript)
-const urls = items.map(item => item.json.url);
-return [{ json: { urls } }];
-
--- PostgreSQL 노드
+-- 이미 처리된(성공한) URL 조회
 SELECT url FROM processed_urls 
-WHERE url = ANY($1::text[]);
+WHERE url = ANY(string_to_array($1, '|||'))
+AND success = true;
 ```
 
-**파라미터:**
-- `$1`: `{{ $json.urls }}`
+**설정:**
+- Operation: Execute Query
+- Query Replacement: `{{ $json.urls }}`
 
-### 3. 중복 필터링 (Code 노드)
+**Always Output Data:** ✅ 체크 (결과가 없어도 다음 노드로 진행)
 
+**설명:**  
+`string_to_array($1, '|||')`로 문자열을 배열로 변환한 후 `ANY()`를 사용하여 한 번의 쿼리로 모든 URL의 중복 여부를 확인합니다.
+
+### 6. Code (중복 제거 링크 배열 생성)
+
+**JavaScript 코드:**
 ```javascript
-// 처리된 URL 목록 가져오기
-const processedUrls = $('PostgreSQL 노드').all()
+// PostgreSQL에서 조회한 이미 처리된 URL 목록
+const processedUrls = $('중복 체크').all()
   .map(item => item.json.url);
 
-// 원본 URL 목록
-const allUrls = $('RSS Read').all();
+// 원본 RSS 데이터 (모든 정보 포함)
+const allItems = $('RSS Read').all();
 
-// 중복 제외
-const newUrls = allUrls.filter(item => 
-  !processedUrls.includes(item.json.url)
-);
+// 중복이 아닌(DB에 없는) URL만 필터링하여 배열로 생성
+const newUrls = allItems
+  .filter(item => !processedUrls.includes(item.json.link))
+  .map(item => item.json.link);
 
-return newUrls;
+// HTTP Request (Batch) 노드가 한 번에 받을 수 있는 형태로 반환
+return {
+  json: {
+    urls: newUrls
+  }
+};
 ```
 
-### 4. FastAPI JWT 토큰 발급
+**설명:**  
+PostgreSQL 중복 체크 결과와 원본 RSS 데이터를 비교하여, 중복이 아닌 URL만 배열로 만듭니다.
 
-**노드:** HTTP Request
+### 7. If (새 URL 확인)
 
-```
-Method: POST
-URL: http://fastapi:8000/login
-Body (JSON):
-{
-  "username": "n8n_user",
-  "password": "secure_password_123"
-}
-```
+**Condition:**
+- Type: Array
+- Value 1: `{{ $json.urls }}`
+- Operation: is not empty
+
+**설명:**  
+새로운 URL이 있을 때만 다음 단계(JWT 발급, 스크래핑)로 진행합니다. 모두 중복이면 워크플로우 종료.
+
+### 8. HTTP Request (JWT 토큰 발급)
+
+**설정:**
+- Method: POST
+- URL: `http://fastapi:8000/login`
+- Send Body: ✅
+- Body Content Type: JSON
+- Body:
+  ```json
+  {
+    "username": "n8n_user",
+    "password": "secure_password_123"
+  }
+  ```
 
 **출력:** `access_token` 저장됨
 
-### 5. FastAPI 병렬 스크래핑
+### 9. HTTP Request (병렬 스크래핑)
 
-**노드:** HTTP Request
+**설정:**
+- Method: POST
+- URL: `http://fastapi:8000/scrape/batch`
+- Send Headers: ✅
+- Header Parameters:
+  - Name: `Authorization`
+  - Value: `Bearer {{ $json.access_token }}`
+- Send Body: ✅
+- Body Parameters:
+  - `urls`: `{{ $('중복 제거 링크 배열 생성').item.json.urls }}`
+  - `max_concurrent`: `5`
+  - `wait_for`: `load`
 
+**설명:**  
+JWT 토큰으로 인증하고, 중복 제거된 URL 배열을 FastAPI에 전송하여 병렬로 스크래핑합니다.
+
+### 10. Filter (성공만 필터링)
+
+**Condition:**
+- Type: Boolean
+- Value 1: `{{ $json.success }}`
+- Operation: is true
+
+**설명:**  
+FastAPI는 실패한 요청도 에러를 내지 않고 `success: false` 응답을 주므로, 성공한 것만 필터링합니다.
+
+### 11. Loop Over Items (Split in Batches)
+
+**설정:**
+- Batch Size: 1 (각 아이템을 하나씩 처리)
+- Options > Reset: ✅ 체크 해제
+
+**설명:**  
+각 스크래핑 결과를 순회하면서 처리합니다.
+
+### 12. WebpageContentExtractor
+
+**설정:**
+- HTML: `={{ $json.content }}`
+
+**설명:**  
+FastAPI에서 받은 HTML content를 텍스트로 추출합니다.
+
+### 13. Code (Google Sheet 헤더 포맷 정규화)
+
+**JavaScript 코드:**
+```javascript
+// 원본 데이터
+const url = $('Loop Over Items').first().json.url;
+const originalPubDate = $input.first().json.publishedTime;
+
+// WebpageContentExtractor 결과
+const extractedText = $input.first().json.textContent;
+const extractedTitle = $input.first().json.title;
+
+// HTTP Request 응답 데이터
+const responseTime = $('Loop Over Items').first().json.response_time_ms;
+
+// 현재 시각
+const scrapedAt = $('Loop Over Items').first().json.scraped_at;
+
+// Google Sheets의 헤더명과 정확히 일치하도록 키 이름을 설정
+return [{
+  json: {
+    "제목": extractedTitle,
+    "URL": url,
+    "본문": extractedText,
+    "발행일": originalPubDate,
+    "스크랩 일시": scrapedAt,
+    "응답 시간(ms)": responseTime
+  }
+}];
 ```
-Method: POST
-URL: http://fastapi:8000/scrape/batch
-Headers:
-  Authorization: Bearer {{ $('JWT Login').item.json.access_token }}
-Body (JSON):
-{
-  "urls": {{ $json.urls }},
-  "max_concurrent": 5,
-  "stealth_mode": true
-}
-```
 
-### 6. 처리된 URL 저장
+**설명:**  
+WebpageContentExtractor 결과와 원본 데이터를 결합하여 Google Sheets 헤더 형식에 맞게 정규화합니다.
+
+### 14. Google Sheets (Append row in sheet)
+
+**설정:**
+- Operation: Append
+- Document ID: 사용할 Google Sheets ID
+- Sheet Name: 저장할 시트 이름
+- Columns: Auto-map input data
+
+**설명:**  
+정규화된 데이터를 Google Sheets에 추가합니다.
+
+### 15. PostgreSQL Insert (처리 완료 URL 저장)
 
 **노드:** PostgreSQL
 
 ```sql
--- 개별 저장 (Item 모드)
+-- 처리 완료된 URL을 DB에 저장
 INSERT INTO processed_urls (url, title, success)
-VALUES ($1, $2, $3)
+VALUES ($1, $2, true)
 ON CONFLICT (url) DO UPDATE SET
   title = EXCLUDED.title,
-  processed_at = CURRENT_TIMESTAMP,
-  success = EXCLUDED.success;
+  success = true,
+  processed_at = CURRENT_TIMESTAMP;
 ```
 
-**파라미터:**
-- `$1`: `{{ $json.url }}`
-- `$2`: `{{ $json.title }}`
-- `$3`: `{{ $json.success }}`
+**설정:**
+- Operation: Execute Query
+- Query Replacement: `{{ $json.URL }},{{ $json['제목'] }}`
+
+**설명:**  
+Google Sheets 저장까지 성공했을 때만 DB에 기록합니다. 중간에 에러가 나면 DB에 기록되지 않으므로 다음 실행 때 재시도합니다.
 
 ## 🔍 트러블슈팅
 
@@ -373,6 +487,25 @@ CREATE INDEX IF NOT EXISTS idx_url ON processed_urls(url);
 \d processed_urls
 ```
 
+### 문제 6: Loop Over Items에서 무한 루프
+
+**원인:** Reset 옵션이 체크되어 있어요.
+
+**해결:**
+- Loop Over Items 노드 설정
+- Options > Reset: ✅ 체크 해제
+
+### 문제 7: WebpageContentExtractor가 작동하지 않음
+
+**원인:** 노드가 설치되지 않았어요.
+
+**해결:**
+```bash
+# N8N에서 WebpageContentExtractor 노드 설치
+# Settings > Community Nodes > Install
+# Package: n8n-nodes-webpage-content-extractor
+```
+
 ## 🎯 네트워크 구성도
 
 ```
@@ -414,6 +547,7 @@ Host Machine:
 - [ ] N8N HTTP Request 노드에서 컨테이너명 사용 확인 (http://fastapi:8000)
 - [ ] 중복 체크 워크플로우 테스트
 - [ ] 병렬 스크래핑 테스트
+- [ ] WebpageContentExtractor 노드 설치 확인
 
 ## 🔐 보안 권장사항
 
@@ -440,7 +574,7 @@ Host Machine:
 SELECT EXISTS(SELECT 1 FROM processed_urls WHERE url = $1)
 
 -- ✅ 빠른 방법: 배치 체크
-SELECT url FROM processed_urls WHERE url = ANY($1::text[])
+SELECT url FROM processed_urls WHERE url = ANY(string_to_array($1, '|||'))
 ```
 
 ### 2. PostgreSQL 인덱스 활용
@@ -456,8 +590,8 @@ CREATE INDEX idx_processed_at ON processed_urls(processed_at DESC);
 ### 3. N8N 병렬 처리
 
 - N8N Split In Batches 노드 활용
-- 50-100개씩 묶어서 처리
 - FastAPI의 `max_concurrent` 조절 (CPU 코어 수에 맞춰)
+- 기본값 5개 권장
 
 ## 📞 추가 도움이 필요하면
 
@@ -477,99 +611,6 @@ docker inspect fastapi_scraper
 # 4. 컨테이너 간 통신 테스트
 docker exec fastapi_scraper ping playwright
 docker exec n8n ping fastapi
-```
-
-## 🎓 N8N 워크플로우 예시 (완전판)
-
-전체 워크플로우 JSON은 다음과 같이 구성할 수 있어요:
-
-```json
-{
-  "nodes": [
-    {
-      "name": "Schedule Trigger",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "parameters": {
-        "rule": {
-          "interval": [{ "field": "hours", "hoursInterval": 1 }]
-        }
-      }
-    },
-    {
-      "name": "PostgreSQL - 테이블 생성",
-      "type": "n8n-nodes-base.postgres",
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "CREATE TABLE IF NOT EXISTS processed_urls ..."
-      },
-      "disabled": true
-    },
-    {
-      "name": "RSS",
-      "type": "n8n-nodes-base.rssFeedRead",
-      "parameters": {
-        "url": "https://news.example.com/rss"
-      }
-    },
-    {
-      "name": "PostgreSQL - 중복 체크",
-      "type": "n8n-nodes-base.postgres",
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT url FROM processed_urls WHERE url = ANY($1::text[])",
-        "additionalFields": {
-          "queryParameters": "={{ [$('Code').item.json.urls] }}"
-        }
-      }
-    },
-    {
-      "name": "HTTP Request - JWT",
-      "type": "n8n-nodes-base.httpRequest",
-      "parameters": {
-        "method": "POST",
-        "url": "http://fastapi:8000/login",
-        "jsonParameters": true,
-        "options": {
-          "bodyContentType": "application/json"
-        },
-        "bodyParametersJson": "={ \"username\": \"n8n_user\", \"password\": \"secure_password_123\" }"
-      }
-    },
-    {
-      "name": "HTTP Request - Scrape",
-      "type": "n8n-nodes-base.httpRequest",
-      "parameters": {
-        "method": "POST",
-        "url": "http://fastapi:8000/scrape/batch",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $('HTTP Request - JWT').item.json.access_token }}"
-            }
-          ]
-        },
-        "jsonParameters": true,
-        "bodyParametersJson": "={ \"urls\": {{ $json.urls }}, \"max_concurrent\": 5 }"
-      }
-    },
-    {
-      "name": "PostgreSQL - 저장",
-      "type": "n8n-nodes-base.postgres",
-      "parameters": {
-        "operation": "insert",
-        "table": "processed_urls",
-        "columns": "url, title, success",
-        "additionalFields": {
-          "onConflict": "doUpdate"
-        }
-      }
-    }
-  ]
-}
 ```
 
 이제 완벽한 N8N + FastAPI 통합 시스템이 완성되었어요! 🎉
